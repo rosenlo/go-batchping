@@ -1,0 +1,8 @@
+
+# misc
+.swp
+*.swp
+*.out
+.DS_Store
+.idea
+build/bin

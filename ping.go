@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -33,11 +34,8 @@ var (
 func NewPinger(addr, network, protocol string, id int) (*Pinger, error) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	p := &Pinger{
-		Count:      -1,
-		Interval:   time.Second,
 		RecordRtts: true,
 		Size:       timeSliceLength,
-		Timeout:    time.Second * 100000,
 		Tracker:    r.Int63n(math.MaxInt64),
 
 		addr:     addr,
@@ -53,20 +51,6 @@ func NewPinger(addr, network, protocol string, id int) (*Pinger, error) {
 
 // Pinger represents a packet sender/receiver.
 type Pinger struct {
-	// Interval is the wait time between each packet send. Default is 1s.
-	Interval time.Duration
-
-	// Timeout specifies a timeout before ping exits, regardless of how many
-	// packets have been received.
-	Timeout time.Duration
-
-	// Count tells pinger to stop after sending (and receiving) Count echo
-	// packets. If this option is not specified, pinger will operate until
-	// interrupted.
-	Count int
-
-	// Debug runs in debug mode
-	Debug bool
 
 	// Number of packets sent
 	PacketsSent int
@@ -111,6 +95,12 @@ type Pinger struct {
 	network string
 	// protocol is "icmp" or "udp".
 	protocol string
+
+	//conn4 is ipv4 icmp PacketConn
+	conn4 *icmp.PacketConn
+
+	//conn6 is ipv6 icmp PacketConn
+	conn6 *icmp.PacketConn
 }
 
 type packet struct {
@@ -240,10 +230,6 @@ func (p *Pinger) SetPrivileged(privileged bool) {
 // Privileged returns whether pinger is running in privileged mode.
 func (p *Pinger) Privileged() bool {
 	return p.protocol == "icmp"
-}
-
-func (p *Pinger) Stop() {
-	close(p.done)
 }
 
 func (p *Pinger) finish() {
@@ -410,7 +396,7 @@ func (p *Pinger) processPacket(recv *packet) error {
 	return nil
 }
 
-func (p *Pinger) SendICMP(conn *icmp.PacketConn, sequence int) error {
+func (p *Pinger) SendICMP(sequence int) error {
 	var typ icmp.Type
 	if p.ipv4 {
 		typ = ipv4.ICMPTypeEcho
@@ -446,22 +432,24 @@ func (p *Pinger) SendICMP(conn *icmp.PacketConn, sequence int) error {
 	}
 
 	for {
-		if _, err := conn.WriteTo(msgBytes, dst); err != nil {
-			if neterr, ok := err.(*net.OpError); ok {
-				if neterr.Err == syscall.ENOBUFS {
-					continue
+		if p.ipv4 {
+			log.Printf("[debug] ipv4: send")
+			if _, err := p.conn4.WriteTo(msgBytes, dst); err != nil {
+				if neterr, ok := err.(*net.OpError); ok {
+					if neterr.Err == syscall.ENOBUFS {
+						continue
+					}
 				}
 			}
-		}
-		handler := p.OnSend
-		if handler != nil {
-			outPkt := &Packet{
-				Nbytes: len(msgBytes),
-				IPAddr: p.ipaddr,
-				Addr:   p.addr,
-				Seq:    sequence,
+		} else {
+			log.Printf("[debug] ipv6: send")
+			if _, err := p.conn6.WriteTo(msgBytes, dst); err != nil {
+				if neterr, ok := err.(*net.OpError); ok {
+					if neterr.Err == syscall.ENOBUFS {
+						continue
+					}
+				}
 			}
-			handler(outPkt)
 		}
 
 		p.PacketsSent++
@@ -469,6 +457,12 @@ func (p *Pinger) SendICMP(conn *icmp.PacketConn, sequence int) error {
 	}
 
 	return nil
+}
+
+// SetConns set ipv4 and ipv6 conn
+func (p *Pinger) SetConns(conn4 *icmp.PacketConn, conn6 *icmp.PacketConn) {
+	p.conn4 = conn4
+	p.conn6 = conn6
 }
 
 func bytesToTime(b []byte) time.Time {

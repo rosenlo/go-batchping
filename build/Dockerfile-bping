@@ -1,0 +1,3 @@
+FROM alpine:3.8
+
+ADD ./bin/bping /usr/local/bin/

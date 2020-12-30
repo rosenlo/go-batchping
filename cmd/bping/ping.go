@@ -4,7 +4,7 @@ import (
 	"log"
 	"runtime"
 
-	"github.com/rosenlo/pinger/pkg/pinger/app"
+	"github.com/rosenlo/go-batchping/pkg/bping/app"
 )
 
 func main() {
