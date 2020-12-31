@@ -1,7 +1,7 @@
 package batchping
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,8 +21,6 @@ var (
 
 type BatchPing struct {
 	sync.RWMutex
-
-	addrs []string
 
 	// Interval is the wait time between each packet send. Default is 1s.
 	Interval time.Duration
@@ -65,14 +63,13 @@ type BatchPing struct {
 	OnFinish func(map[string]*Statistics)
 }
 
-func New(addrs []string, privileged bool) (*BatchPing, error) {
+func New(privileged bool) (*BatchPing, error) {
 	network := "ip"
 	protocol := "udp"
 	if privileged {
 		protocol = "icmp"
 	}
 	batchping := &BatchPing{
-		addrs:    addrs,
 		Interval: time.Second,
 		Timeout:  time.Second * 10,
 		id:       os.Getpid() & 0xffff,
@@ -85,7 +82,17 @@ func New(addrs []string, privileged bool) (*BatchPing, error) {
 	return batchping, nil
 }
 
-func (bp *BatchPing) Run(ctx context.Context) error {
+func (bp *BatchPing) PreRun() {
+	bp.PacketsSent = 0
+	bp.PacketsRecv = 0
+	bp.done = make(chan bool)
+}
+
+func (bp *BatchPing) Run(addrs []string) error {
+	bp.PreRun()
+	if len(addrs) == 0 {
+		return errors.New("no such hosts")
+	}
 	var err error
 	bp.conn4, err = icmp.ListenPacket(ipv4Proto[bp.protocol], bp.source)
 	if err != nil {
@@ -106,7 +113,8 @@ func (bp *BatchPing) Run(ctx context.Context) error {
 	}
 	defer bp.conn4.Close()
 	defer bp.conn6.Close()
-	for _, addr := range bp.addrs {
+
+	for _, addr := range addrs {
 		pinger, err := NewPinger(addr, bp.network, bp.protocol, bp.id)
 		if err != nil {
 			log.Printf("[error] %v, addr: %s network: %s, protocol: %s", err, addr, bp.network, bp.protocol)
@@ -120,55 +128,58 @@ func (bp *BatchPing) Run(ctx context.Context) error {
 	wg.Add(2)
 	go bp.batchRecvIpv4ICMP(&wg)
 	go bp.batchRecvIpv6ICMP(&wg)
-	go bp.batchSendICMP()
 
 	timeout := time.NewTimer(bp.Timeout)
+	defer log.Println(4)
+	defer timeout.Stop()
+
 	interval := time.NewTimer(bp.Interval)
 	defer interval.Stop()
-	defer timeout.Stop()
+	defer log.Println(3)
+
 	defer bp.Finish()
 
+	sequence := 0
 	for {
-		select {
-		case <-ctx.Done():
+
+		if sequence < bp.Count {
+			go bp.batchSendICMP(sequence)
+			sequence++
+		}
+
+		if bp.Count > 0 && bp.PacketsRecv/len(addrs) >= bp.Count {
+			log.Printf("[debug] packetsSent: %d", bp.PacketsSent)
+			log.Printf("[debug] packetsRecv: %d", bp.PacketsRecv)
+			log.Printf("[debug] close")
 			close(bp.done)
+			wg.Wait()
 			return nil
+		}
+
+		select {
 		case <-bp.done:
 			return nil
+		case <-interval.C:
+			log.Printf("interval.C")
+			continue
 		case <-timeout.C:
 			log.Printf("[debug] timeout close")
 			close(bp.done)
 			wg.Wait()
+			return nil
 		default:
-			if bp.Count > 0 && bp.PacketsRecv/len(bp.addrs) >= bp.Count {
-				log.Printf("[debug] close")
-				close(bp.done)
-				wg.Wait()
-			}
-			time.Sleep(time.Millisecond * 10)
+			time.Sleep(time.Millisecond * 100)
+			log.Println("default")
 		}
 	}
 }
 
-func (bp *BatchPing) batchSendICMP() {
-	timeout := time.NewTimer(bp.Timeout)
-	interval := time.NewTimer(bp.Interval)
-	defer interval.Stop()
-	defer timeout.Stop()
+func (bp *BatchPing) batchSendICMP(seq int) {
 
-	for {
-		select {
-		case <-bp.done:
-			return
-		case <-interval.C:
-			for seq := 0; seq < bp.Count; seq++ {
-				log.Printf("[debug] send seq=%d", seq)
-				for _, pinger := range bp.pingers {
-					pinger.SendICMP(seq)
-					bp.PacketsSent++
-				}
-			}
-		}
+	log.Printf("[debug] send seq=%d", seq)
+	for _, pinger := range bp.pingers {
+		pinger.SendICMP(seq)
+		bp.PacketsSent++
 	}
 }
 
@@ -297,11 +308,11 @@ func (bp *BatchPing) processPacket(recv *packet) error {
 }
 
 func (bp *BatchPing) Statistics() map[string]*Statistics {
-	stMap := map[string]*Statistics{}
+	pingerStat := map[string]*Statistics{}
 	for ip, pinger := range bp.pingers {
-		stMap[ip] = pinger.Statistics()
+		pingerStat[ip] = pinger.Statistics()
 	}
-	return stMap
+	return pingerStat
 }
 
 func (bp *BatchPing) Finish() {

@@ -31,6 +31,9 @@ func initConfig() {
 	viper.SetDefault("executor", "/bin/sh")
 	viper.SetDefault("executor_arg", "-ec")
 	viper.SetDefault("timeout", 10)
+	viper.SetDefault("interval", 20)
+	viper.SetDefault("metric_resp", "bping.resp")
+	viper.SetDefault("metric_loss", "bping.loss")
 
 	viper.AutomaticEnv() // read in environment variables that match
 

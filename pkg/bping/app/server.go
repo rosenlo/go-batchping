@@ -1,8 +1,8 @@
 package app
 
 import (
-	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,58 +15,93 @@ import (
 	"github.com/spf13/viper"
 )
 
-func StartSignal(pid int, exitfunc ...func()) {
-	sigs := make(chan os.Signal, 1)
-	log.Printf("pid: %d register signal notify", pid)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+const (
+	MetricType  = "GAUGE"
+	DefaultName = "aggregator"
+)
 
-	for {
-		s := <-sigs
-		log.Printf("recv %s", s)
-
-		switch s {
-		case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
-			if len(exitfunc) != 0 {
-				for _, f := range exitfunc {
-					f()
-				}
-			}
-			log.Printf("graceful shut down")
-			log.Printf("main pid: %d exit", pid)
-			os.Exit(0)
+func ConvertTransfer(mapStat map[string]*batchping.Statistics) {
+	timestamp := time.Now().Unix()
+	args := make([]bping.MetricValue, 0)
+	metricResp := viper.GetString("metric_resp")
+	metricLoss := viper.GetString("metric_resp")
+	for _, stat := range mapStat {
+		log.Println(stat)
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = DefaultName
 		}
+		args = append(args, bping.MetricValue{
+			Endpoint:  hostname,
+			Metric:    metricResp,
+			Value:     stat.AvgRtt.Milliseconds(),
+			Type:      MetricType,
+			Tags:      fmt.Sprintf("src=%s,dest=%s", hostname, stat.Addr),
+			Timestamp: timestamp,
+		})
+		args = append(args, bping.MetricValue{
+			Endpoint:  hostname,
+			Metric:    metricLoss,
+			Value:     stat.PacketLoss,
+			Type:      MetricType,
+			Tags:      fmt.Sprintf("src=%s,dest=%s", hostname, stat.Addr),
+			Timestamp: timestamp,
+		})
 	}
+	log.Println(args)
 }
 
 func Run(cmd *cobra.Command, args []string) {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	command := viper.GetString("command")
-	addrs, err := ping.TCPSockAddr(command)
-	log.Printf("[debug] addrs: %v", addrs)
-	if err != nil {
-		quit(err)
-	}
-	if len(addrs) == 0 {
-		quit(errors.New("no such addrs"))
-	}
 	privileged := viper.GetBool("privileged")
-	bp, err := batchping.New(addrs, privileged)
+	bp, err := batchping.New(privileged)
 	if err != nil {
 		quit(err)
 	}
-	bp.Interval = time.Second * time.Duration(viper.GetInt("interval"))
+
 	bp.Timeout = time.Second * time.Duration(viper.GetInt("timeout"))
 	bp.OnFinish = func(pingerStat map[string]*batchping.Statistics) {
-		for ip, stat := range pingerStat {
-			log.Printf("[debug] %s %v", ip, stat.Rtts)
+		ConvertTransfer(pingerStat)
+	}
+
+	interval := time.NewTimer(time.Second * time.Duration(viper.GetInt("interval")))
+	defer interval.Stop()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+
+	for {
+
+		addrs, err := bping.TCPSockAddr(command)
+		log.Printf("[debug] addrs: %v", addrs)
+		if err != nil {
+			quit(err)
+		}
+		if len(addrs) == 0 {
+			quit(errors.New("no such addrs"))
+		}
+
+		go func() {
+			err := bp.Run(addrs)
+			if err != nil {
+				log.Printf("[error] %v", err)
+			}
+		}()
+
+		select {
+		case <-interval.C:
+			continue
+		case signal := <-sigs:
+			log.Printf("[debug] Receive %s signal", signal)
+			switch signal {
+
+			case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
+				time.Sleep(time.Second)
+				os.Exit(0)
+			}
 		}
 	}
-	log.Printf("[debug] packetsSent: %d", bp.PacketsSent)
-	log.Printf("[debug] packetsRecv: %d", bp.PacketsRecv)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	bp.Run(ctx)
-	StartSignal(os.Getpid(), cancel)
 }
 
 func quit(err error) {

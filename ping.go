@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"log"
 	"math"
 	"math/rand"
 	"net"
-	"sync"
 	"syscall"
 	"time"
 
@@ -279,121 +277,6 @@ func (p *Pinger) Statistics() *Statistics {
 			float64(sumsquares / time.Duration(len(p.rtts)))))
 	}
 	return &s
-}
-
-func (p *Pinger) recvICMP(conn *icmp.PacketConn, recv chan<- *packet, wg *sync.WaitGroup) error {
-	defer wg.Done()
-	for {
-		select {
-		case <-p.done:
-			return nil
-		default:
-			bytes := make([]byte, 512)
-			if err := conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100)); err != nil {
-				return err
-			}
-			var n, ttl int
-			var err error
-			if p.ipv4 {
-				var cm *ipv4.ControlMessage
-				n, cm, _, err = conn.IPv4PacketConn().ReadFrom(bytes)
-				if cm != nil {
-					ttl = cm.TTL
-				}
-			} else {
-				var cm *ipv6.ControlMessage
-				n, cm, _, err = conn.IPv6PacketConn().ReadFrom(bytes)
-				if cm != nil {
-					ttl = cm.HopLimit
-				}
-			}
-			if err != nil {
-				if neterr, ok := err.(*net.OpError); ok {
-					if neterr.Timeout() {
-						// Read timeout
-						continue
-					} else {
-						close(p.done)
-						return err
-					}
-				}
-			}
-
-			select {
-			case <-p.done:
-				return nil
-			case recv <- &packet{bytes: bytes, nbytes: n, ttl: ttl}:
-			}
-		}
-	}
-}
-
-func (p *Pinger) processPacket(recv *packet) error {
-	receivedAt := time.Now()
-	var proto int
-	if p.ipv4 {
-		proto = protocolICMP
-	} else {
-		proto = protocolIPv6ICMP
-	}
-
-	var m *icmp.Message
-	var err error
-	if m, err = icmp.ParseMessage(proto, recv.bytes); err != nil {
-		return fmt.Errorf("error parsing icmp message: %s", err.Error())
-	}
-
-	if m.Type != ipv4.ICMPTypeEchoReply && m.Type != ipv6.ICMPTypeEchoReply {
-		// Not an echo reply, ignore it
-		return nil
-	}
-
-	outPkt := &Packet{
-		Nbytes: recv.nbytes,
-		IPAddr: p.ipaddr,
-		Addr:   p.addr,
-		Ttl:    recv.ttl,
-	}
-
-	switch pkt := m.Body.(type) {
-	case *icmp.Echo:
-		// If we are priviledged, we can match icmp.ID
-		if p.protocol == "icmp" {
-			// Check if reply from same ID
-			if pkt.ID != p.id {
-				return nil
-			}
-		}
-
-		if len(pkt.Data) < timeSliceLength+trackerLength {
-			return fmt.Errorf("insufficient data received; got: %d %v",
-				len(pkt.Data), pkt.Data)
-		}
-
-		tracker := bytesToInt(pkt.Data[timeSliceLength:])
-		timestamp := bytesToTime(pkt.Data[:timeSliceLength])
-
-		if tracker != p.Tracker {
-			return nil
-		}
-
-		outPkt.Rtt = receivedAt.Sub(timestamp)
-		outPkt.Seq = pkt.Seq
-		p.PacketsRecv++
-	default:
-		// Very bad, not sure how this can happen
-		return fmt.Errorf("invalid ICMP echo reply; type: '%T', '%v'", pkt, pkt)
-	}
-
-	if p.RecordRtts {
-		p.rtts = append(p.rtts, outPkt.Rtt)
-	}
-	handler := p.OnRecv
-	if handler != nil {
-		handler(outPkt)
-	}
-
-	return nil
 }
 
 func (p *Pinger) SendICMP(sequence int) error {

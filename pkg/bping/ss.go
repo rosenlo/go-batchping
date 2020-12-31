@@ -1,4 +1,4 @@
-package ping
+package bping
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ func NewCommandContext(ctx context.Context, path string, arg ...string) *exec.Cm
 func TCPSockAddr(command string) ([]string, error) {
 	executor := viper.GetString("executor")
 	executorArg := viper.GetString("executor_arg")
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	log.Printf("[debug] run command: %s", command)
