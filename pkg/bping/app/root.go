@@ -27,11 +27,12 @@ func init() {
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	// basic
+	viper.SetEnvPrefix("bping")
 	viper.SetDefault("command", "ss -atn4 state established '( sport = :8080 )' |awk '{print $4}'|awk -F':' '{print $1}'|sort -n|uniq")
 	viper.SetDefault("executor", "/bin/sh")
 	viper.SetDefault("executor_arg", "-ec")
 	viper.SetDefault("timeout", 10)
-	viper.SetDefault("interval", 20)
+	viper.SetDefault("interval", 30)
 	viper.SetDefault("metric_resp", "bping.resp")
 	viper.SetDefault("metric_loss", "bping.loss")
 

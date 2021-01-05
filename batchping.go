@@ -20,8 +20,6 @@ var (
 )
 
 type BatchPing struct {
-	sync.RWMutex
-
 	// Interval is the wait time between each packet send. Default is 1s.
 	Interval time.Duration
 
@@ -37,6 +35,9 @@ type BatchPing struct {
 
 	source string
 
+	// Number of packets received
+	PacketsRecv int
+
 	// network is one of "ip", "ip4", or "ip6".
 	network string
 	// protocol is "icmp" or "udp".
@@ -44,12 +45,6 @@ type BatchPing struct {
 
 	// stop chan bool
 	done chan bool
-
-	// Number of packets sent
-	PacketsSent int
-
-	// Number of packets received
-	PacketsRecv int
 
 	pingers map[string]*Pinger
 
@@ -69,7 +64,7 @@ func New(privileged bool) (*BatchPing, error) {
 	if privileged {
 		protocol = "icmp"
 	}
-	batchping := &BatchPing{
+	bp := &BatchPing{
 		Interval: time.Second,
 		Timeout:  time.Second * 10,
 		id:       os.Getpid() & 0xffff,
@@ -79,40 +74,54 @@ func New(privileged bool) (*BatchPing, error) {
 		done:     make(chan bool),
 		pingers:  make(map[string]*Pinger),
 	}
-	return batchping, nil
+
+	var err error
+
+	// ipv4
+	if bp.conn4, err = icmp.ListenPacket(ipv4Proto[protocol], bp.source); err != nil {
+		log.Printf("[error] %s %v", protocol, err)
+		return nil, err
+	} else {
+		err := bp.conn4.IPv4PacketConn().SetControlMessage(ipv4.FlagTTL, true)
+		if err != nil {
+			log.Printf("[error] %v", err)
+			return nil, err
+		}
+	}
+
+	// ipv6
+	if bp.conn6, err = icmp.ListenPacket(ipv6Proto[bp.protocol], bp.source); err != nil {
+		log.Printf("[error] %s %v", bp.protocol, err)
+	} else {
+		err := bp.conn6.IPv6PacketConn().SetControlMessage(ipv6.FlagHopLimit, true)
+		if err != nil {
+			log.Printf("[error] %v", err)
+		}
+	}
+
+	return bp, nil
 }
 
 func (bp *BatchPing) PreRun() {
-	bp.PacketsSent = 0
 	bp.PacketsRecv = 0
 	bp.done = make(chan bool)
+	bp.pingers = make(map[string]*Pinger)
+}
+
+func (bp *BatchPing) Close() {
+	if bp.conn4 != nil {
+		bp.conn4.Close()
+	}
+	if bp.conn6 != nil {
+		bp.conn6.Close()
+	}
 }
 
 func (bp *BatchPing) Run(addrs []string) error {
 	bp.PreRun()
 	if len(addrs) == 0 {
-		return errors.New("no such hosts")
+		return errors.New("missing address")
 	}
-	var err error
-	bp.conn4, err = icmp.ListenPacket(ipv4Proto[bp.protocol], bp.source)
-	if err != nil {
-		log.Printf("[error] %v", err)
-		return err
-	}
-	if err := bp.conn4.IPv4PacketConn().SetControlMessage(ipv4.FlagTTL, true); err != nil {
-		log.Printf("[error] %v", err)
-		return err
-	}
-	if bp.conn6, err = icmp.ListenPacket(ipv6Proto[bp.protocol], bp.source); err != nil {
-		log.Printf("[error] %v", err)
-		return err
-	}
-	if err := bp.conn6.IPv6PacketConn().SetControlMessage(ipv6.FlagHopLimit, true); err != nil {
-		log.Printf("[error] %v", err)
-		return err
-	}
-	defer bp.conn4.Close()
-	defer bp.conn6.Close()
 
 	for _, addr := range addrs {
 		pinger, err := NewPinger(addr, bp.network, bp.protocol, bp.id)
@@ -130,12 +139,10 @@ func (bp *BatchPing) Run(addrs []string) error {
 	go bp.batchRecvIpv6ICMP(&wg)
 
 	timeout := time.NewTimer(bp.Timeout)
-	defer log.Println(4)
 	defer timeout.Stop()
 
-	interval := time.NewTimer(bp.Interval)
+	interval := time.NewTicker(bp.Interval)
 	defer interval.Stop()
-	defer log.Println(3)
 
 	defer bp.Finish()
 
@@ -143,13 +150,11 @@ func (bp *BatchPing) Run(addrs []string) error {
 	for {
 
 		if sequence < bp.Count {
-			go bp.batchSendICMP(sequence)
+			bp.batchSendICMP(sequence)
 			sequence++
 		}
 
 		if bp.Count > 0 && bp.PacketsRecv/len(addrs) >= bp.Count {
-			log.Printf("[debug] packetsSent: %d", bp.PacketsSent)
-			log.Printf("[debug] packetsRecv: %d", bp.PacketsRecv)
 			log.Printf("[debug] close")
 			close(bp.done)
 			wg.Wait()
@@ -158,18 +163,15 @@ func (bp *BatchPing) Run(addrs []string) error {
 
 		select {
 		case <-bp.done:
+			log.Printf("receivce close")
 			return nil
 		case <-interval.C:
-			log.Printf("interval.C")
 			continue
 		case <-timeout.C:
 			log.Printf("[debug] timeout close")
 			close(bp.done)
 			wg.Wait()
 			return nil
-		default:
-			time.Sleep(time.Millisecond * 100)
-			log.Println("default")
 		}
 	}
 }
@@ -179,7 +181,6 @@ func (bp *BatchPing) batchSendICMP(seq int) {
 	log.Printf("[debug] send seq=%d", seq)
 	for _, pinger := range bp.pingers {
 		pinger.SendICMP(seq)
-		bp.PacketsSent++
 	}
 }
 
@@ -211,7 +212,6 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 				n, cm, addr, err = bp.conn6.IPv6PacketConn().ReadFrom(bytes)
 				if cm != nil {
 					ttl = cm.HopLimit
-					log.Printf("[debug] ipv6, %v", cm.Src.String())
 				}
 			}
 			if err != nil {
@@ -227,19 +227,25 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 			}
 
 			recv := &packet{bytes: bytes, nbytes: n, ttl: ttl, proto: proto, addr: addr}
-			go bp.processPacket(recv)
+			bp.processPacket(recv)
 		}
 	}
 }
 
 func (bp *BatchPing) batchRecvIpv4ICMP(wg *sync.WaitGroup) {
 	defer wg.Done()
+	if bp.conn4 == nil {
+		return
+	}
 	log.Printf("[debug] %s: start recv", protoIpv4)
 	bp.batchRecvICMP(protoIpv4)
 }
 
 func (bp *BatchPing) batchRecvIpv6ICMP(wg *sync.WaitGroup) {
 	defer wg.Done()
+	if bp.conn6 == nil {
+		return
+	}
 	log.Printf("[debug] %s: start recv", protoIpv6)
 	bp.batchRecvICMP(protoIpv6)
 }
@@ -294,11 +300,9 @@ func (bp *BatchPing) processPacket(recv *packet) error {
 			pinger.rtts = append(pinger.rtts, rtt)
 		}
 
-		log.Printf("[debug] %s: recv pkt", recv.proto)
-
-		bp.Lock()
 		bp.PacketsRecv++
-		bp.Unlock()
+		log.Printf("[debug] %s: recv pkt from %s", recv.proto, ip)
+
 	default:
 		// Very bad, not sure how this can happen
 		return fmt.Errorf("invalid ICMP echo reply; type: '%T', '%v'", pkt, pkt)

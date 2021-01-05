@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,66 +19,89 @@ const (
 	DefaultName = "aggregator"
 )
 
-func ConvertTransfer(mapStat map[string]*batchping.Statistics) {
+func init() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+}
+
+func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 	timestamp := time.Now().Unix()
-	args := make([]bping.MetricValue, 0)
+	args := make([]*bping.MetricValue, 0)
 	metricResp := viper.GetString("metric_resp")
-	metricLoss := viper.GetString("metric_resp")
+	metricLoss := viper.GetString("metric_loss")
+	transferAddr := viper.GetString("transfer_addr")
+	step := viper.GetInt("interval")
 	for _, stat := range mapStat {
-		log.Println(stat)
+		log.Printf("[debug] %s", stat)
 		hostname, err := os.Hostname()
 		if err != nil {
 			hostname = DefaultName
 		}
-		args = append(args, bping.MetricValue{
+		args = append(args, &bping.MetricValue{
 			Endpoint:  hostname,
 			Metric:    metricResp,
-			Value:     stat.AvgRtt.Milliseconds(),
+			Value:     fmt.Sprintf("%.2f", float64(stat.AvgRtt)/1e6),
 			Type:      MetricType,
 			Tags:      fmt.Sprintf("src=%s,dest=%s", hostname, stat.Addr),
 			Timestamp: timestamp,
+			Step:      step,
 		})
-		args = append(args, bping.MetricValue{
+		args = append(args, &bping.MetricValue{
 			Endpoint:  hostname,
 			Metric:    metricLoss,
-			Value:     stat.PacketLoss,
+			Value:     fmt.Sprintf("%.2f", stat.PacketLoss),
 			Type:      MetricType,
 			Tags:      fmt.Sprintf("src=%s,dest=%s", hostname, stat.Addr),
 			Timestamp: timestamp,
+			Step:      step,
 		})
 	}
-	log.Println(args)
+
+	transfer, err := bping.NewTransfer(transferAddr, time.Second)
+	if err != nil {
+		log.Printf("[error] %v", err)
+		return
+	}
+	reply := new(bping.TransferResponse)
+	err = transfer.Send(args, reply)
+	if err != nil {
+		log.Printf("[error] %v", err)
+	}
 }
 
 func Run(cmd *cobra.Command, args []string) {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	command := viper.GetString("command")
+	count := viper.GetInt("count")
 	privileged := viper.GetBool("privileged")
 	bp, err := batchping.New(privileged)
 	if err != nil {
 		quit(err)
 	}
+	defer bp.Close()
+
+	interval := time.NewTicker(time.Second * time.Duration(viper.GetInt("interval")))
+	defer interval.Stop()
 
 	bp.Timeout = time.Second * time.Duration(viper.GetInt("timeout"))
 	bp.OnFinish = func(pingerStat map[string]*batchping.Statistics) {
-		ConvertTransfer(pingerStat)
+		TransferFalcon(pingerStat)
 	}
 
-	interval := time.NewTimer(time.Second * time.Duration(viper.GetInt("interval")))
-	defer interval.Stop()
+	if count > 0 {
+		bp.Count = count
+	}
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
 	for {
-
 		addrs, err := bping.TCPSockAddr(command)
 		log.Printf("[debug] addrs: %v", addrs)
 		if err != nil {
 			quit(err)
 		}
 		if len(addrs) == 0 {
-			quit(errors.New("no such addrs"))
+			log.Printf("[warn] missing address")
+			continue
 		}
 
 		go func() {
@@ -88,7 +110,6 @@ func Run(cmd *cobra.Command, args []string) {
 				log.Printf("[error] %v", err)
 			}
 		}()
-
 		select {
 		case <-interval.C:
 			continue

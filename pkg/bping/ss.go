@@ -42,9 +42,12 @@ func TCPSockAddr(command string) ([]string, error) {
 	}
 
 	lines := bytes.Split(output, []byte("\n"))
-	addrs := make([]string, len(lines))
-	for idx, line := range lines {
-		addrs[idx] = strings.Trim(string(line), "\n")
+	addrs := make([]string, 0)
+	for _, line := range lines {
+		addr := strings.Trim(string(line), "\n")
+		if addr != "" {
+			addrs = append(addrs, addr)
+		}
 	}
 	return addrs, nil
 }

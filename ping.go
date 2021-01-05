@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -165,6 +166,12 @@ type Statistics struct {
 	StdDevRtt time.Duration
 }
 
+func (s *Statistics) String() string {
+	return fmt.Sprintf(
+		"PacketsSent: %d PacketsRecv: %d PacketLoss: %.2f Addr %s Rtts: %v",
+		s.PacketsSent, s.PacketsRecv, s.PacketLoss, s.Addr, s.Rtts)
+}
+
 // SetIPAddr sets the ip address of the target host.
 func (p *Pinger) SetIPAddr(ipaddr *net.IPAddr) {
 	p.ipv4 = isIPv4(ipaddr.IP)
@@ -316,7 +323,7 @@ func (p *Pinger) SendICMP(sequence int) error {
 
 	for {
 		if p.ipv4 {
-			log.Printf("[debug] ipv4: send")
+			log.Printf("[debug] ipv4: send %s", p.addr)
 			if _, err := p.conn4.WriteTo(msgBytes, dst); err != nil {
 				if neterr, ok := err.(*net.OpError); ok {
 					if neterr.Err == syscall.ENOBUFS {
@@ -325,7 +332,7 @@ func (p *Pinger) SendICMP(sequence int) error {
 				}
 			}
 		} else {
-			log.Printf("[debug] ipv6: send")
+			log.Printf("[debug] ipv6: send %s", p.addr)
 			if _, err := p.conn6.WriteTo(msgBytes, dst); err != nil {
 				if neterr, ok := err.(*net.OpError); ok {
 					if neterr.Err == syscall.ENOBUFS {
