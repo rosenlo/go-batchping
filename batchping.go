@@ -144,8 +144,8 @@ func (bp *BatchPing) Run(addrs []string) error {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go bp.batchRecvIpv4ICMP(&wg)
-	go bp.batchRecvIpv6ICMP(&wg)
+	bp.batchRecvIpv4ICMP(&wg)
+	bp.batchRecvIpv6ICMP(&wg)
 
 	timeout := time.NewTimer(bp.Timeout)
 	defer timeout.Stop()
@@ -172,7 +172,7 @@ func (bp *BatchPing) Run(addrs []string) error {
 
 		select {
 		case <-bp.done:
-			log.Printf("receivce close")
+			log.Printf("[debug] receivce close")
 			return nil
 		case <-interval.C:
 			continue
@@ -193,7 +193,8 @@ func (bp *BatchPing) batchSendICMP(seq int) {
 	}
 }
 
-func (bp *BatchPing) batchRecvICMP(proto string) {
+func (bp *BatchPing) batchRecvICMP(wg *sync.WaitGroup, proto string) {
+	defer wg.Done()
 	for {
 		select {
 		case <-bp.done:
@@ -229,7 +230,7 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 						// Read timeout
 						continue
 					} else {
-						log.Printf("read err %s ", err)
+						log.Printf("[error] read err %s ", err)
 						return
 					}
 				}
@@ -242,21 +243,19 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 }
 
 func (bp *BatchPing) batchRecvIpv4ICMP(wg *sync.WaitGroup) {
-	defer wg.Done()
 	if bp.conn4 == nil {
 		return
 	}
 	log.Printf("[debug] %s: start recv", protoIpv4)
-	bp.batchRecvICMP(protoIpv4)
+	go bp.batchRecvICMP(wg, protoIpv4)
 }
 
 func (bp *BatchPing) batchRecvIpv6ICMP(wg *sync.WaitGroup) {
-	defer wg.Done()
 	if bp.conn6 == nil {
 		return
 	}
 	log.Printf("[debug] %s: start recv", protoIpv6)
-	bp.batchRecvICMP(protoIpv6)
+	go bp.batchRecvICMP(wg, protoIpv6)
 }
 
 func (bp *BatchPing) processPacket(recv *packet) error {
