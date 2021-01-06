@@ -7,6 +7,3 @@
 .idea
 build/bin
 Makefile-dd
-pkg/pingall
-cmd/pingall
-build/Dockerfile-pingall
