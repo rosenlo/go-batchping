@@ -1,4 +1,4 @@
-module github.com/rosenlo/pinger
+module github.com/rosenlo/go-batchping
 
 go 1.13
 

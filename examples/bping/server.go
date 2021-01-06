@@ -1,4 +1,4 @@
-package app
+package bping
 
 import (
 	"fmt"
@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/rosenlo/go-batchping"
-	"github.com/rosenlo/go-batchping/pkg/bping"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -25,7 +24,7 @@ func init() {
 
 func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 	timestamp := time.Now().Unix()
-	args := make([]*bping.MetricValue, 0)
+	args := make([]*MetricValue, 0)
 	metricResp := viper.GetString("metric_resp")
 	metricLoss := viper.GetString("metric_loss")
 	transferAddr := viper.GetString("transfer_addr")
@@ -40,7 +39,7 @@ func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 			tag = fmt.Sprintf("src=%s,%s", hostname, tag)
 		}
 
-		args = append(args, &bping.MetricValue{
+		args = append(args, &MetricValue{
 			Endpoint:  hostname,
 			Metric:    metricResp,
 			Value:     fmt.Sprintf("%.2f", float64(stat.MaxRtt)/1e6),
@@ -49,7 +48,7 @@ func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 			Timestamp: timestamp,
 			Step:      step,
 		})
-		args = append(args, &bping.MetricValue{
+		args = append(args, &MetricValue{
 			Endpoint:  hostname,
 			Metric:    metricLoss,
 			Value:     fmt.Sprintf("%.2f", stat.PacketLoss),
@@ -60,12 +59,12 @@ func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 		})
 	}
 
-	transfer, err := bping.NewTransfer(transferAddr, time.Second)
+	transfer, err := NewTransfer(transferAddr, time.Second)
 	if err != nil {
 		log.Printf("[error] %v", err)
 		return
 	}
-	reply := new(bping.TransferResponse)
+	reply := new(TransferResponse)
 	err = transfer.Send(args, reply)
 	if err != nil {
 		log.Printf("[error] %v", err)
@@ -98,7 +97,7 @@ func Run(cmd *cobra.Command, args []string) {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
 	for {
-		addrs, err := bping.TCPSockAddr(command)
+		addrs, err := TCPSockAddr(command)
 		log.Printf("[debug] addrs: %v", addrs)
 		if err != nil {
 			quit(err)

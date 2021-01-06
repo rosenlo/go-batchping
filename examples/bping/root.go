@@ -1,4 +1,4 @@
-package app
+package bping
 
 import (
 	"github.com/spf13/cobra"

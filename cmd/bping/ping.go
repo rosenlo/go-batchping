@@ -4,12 +4,12 @@ import (
 	"log"
 	"runtime"
 
-	"github.com/rosenlo/go-batchping/pkg/bping/app"
+	"github.com/rosenlo/go-batchping/examples/bping"
 )
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	if err := app.Execute(); err != nil {
+	if err := bping.Execute(); err != nil {
 		log.Fatal(err)
 	}
 }

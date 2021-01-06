@@ -1,7 +1,7 @@
 include $(realpath $(GOPATH)/src/github.com/rosenlo/go-batchping/build/Makefile)
 
 .PHONY:default
-default: batchping
+default: bping
 
 .PHONY:test
 test:
