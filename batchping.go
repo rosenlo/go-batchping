@@ -4,8 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"math/rand"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ var (
 )
 
 type BatchPing struct {
+	sync.RWMutex
+
 	// Interval is the wait time between each packet send. Default is 1s.
 	Interval time.Duration
 
@@ -37,6 +40,9 @@ type BatchPing struct {
 
 	// Number of packets received
 	PacketsRecv int
+
+	// Tracker: Used to uniquely identify packet when non-priviledged
+	Tracker int64
 
 	// network is one of "ip", "ip4", or "ip6".
 	network string
@@ -64,15 +70,17 @@ func New(privileged bool) (*BatchPing, error) {
 	if privileged {
 		protocol = "icmp"
 	}
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	bp := &BatchPing{
 		Interval: time.Second,
 		Timeout:  time.Second * 10,
-		id:       os.Getpid() & 0xffff,
+		id:       r.Intn(0xffff),
 		Count:    3,
 		network:  network,
 		protocol: protocol,
 		done:     make(chan bool),
 		pingers:  make(map[string]*Pinger),
+		Tracker:  r.Int63n(math.MaxInt64),
 	}
 
 	var err error
@@ -125,9 +133,10 @@ func (bp *BatchPing) Run(addrs []string) error {
 
 	for _, addr := range addrs {
 		pinger, err := NewPinger(addr, bp.network, bp.protocol, bp.id)
+		pinger.Tracker = bp.Tracker
 		if err != nil {
 			log.Printf("[error] %v, addr: %s network: %s, protocol: %s", err, addr, bp.network, bp.protocol)
-			return err
+			continue
 		}
 		pinger.SetConns(bp.conn4, bp.conn6)
 		bp.pingers[pinger.IPAddr().String()] = pinger
@@ -194,13 +203,13 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 			bytes := make([]byte, 512)
 			var n, ttl int
 			var err error
-			var addr net.Addr
+			var src net.Addr
 			if proto == protoIpv4 {
 				if err := bp.conn4.SetReadDeadline(time.Now().Add(time.Millisecond * 100)); err != nil {
 					log.Printf("[error] %v", err)
 				}
 				var cm *ipv4.ControlMessage
-				n, cm, addr, err = bp.conn4.IPv4PacketConn().ReadFrom(bytes)
+				n, cm, src, err = bp.conn4.IPv4PacketConn().ReadFrom(bytes)
 				if cm != nil {
 					ttl = cm.TTL
 				}
@@ -209,7 +218,7 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 					log.Printf("[error] %v", err)
 				}
 				var cm *ipv6.ControlMessage
-				n, cm, addr, err = bp.conn6.IPv6PacketConn().ReadFrom(bytes)
+				n, cm, src, err = bp.conn6.IPv6PacketConn().ReadFrom(bytes)
 				if cm != nil {
 					ttl = cm.HopLimit
 				}
@@ -226,8 +235,8 @@ func (bp *BatchPing) batchRecvICMP(proto string) {
 				}
 			}
 
-			recv := &packet{bytes: bytes, nbytes: n, ttl: ttl, proto: proto, addr: addr}
-			bp.processPacket(recv)
+			recv := &packet{bytes: bytes, nbytes: n, ttl: ttl, proto: proto, src: src}
+			go bp.processPacket(recv)
 		}
 	}
 }
@@ -272,9 +281,12 @@ func (bp *BatchPing) processPacket(recv *packet) error {
 
 	switch pkt := m.Body.(type) {
 	case *icmp.Echo:
-		// Check if reply from same ID
-		if pkt.ID != bp.id {
-			return nil
+		// If we are priviledged, we can match icmp.ID
+		if bp.protocol == "icmp" {
+			// Check if reply from same ID
+			if pkt.ID != bp.id {
+				return nil
+			}
 		}
 
 		if len(pkt.Data) < timeSliceLength+trackerLength {
@@ -282,26 +294,33 @@ func (bp *BatchPing) processPacket(recv *packet) error {
 				len(pkt.Data), pkt.Data)
 		}
 
+		tracker := bytesToInt(pkt.Data[timeSliceLength:])
 		timestamp := bytesToTime(pkt.Data[:timeSliceLength])
+
+		if tracker != bp.Tracker {
+			return nil
+		}
 
 		var ip string
 		if bp.protocol == "udp" {
-			if ip, _, err = net.SplitHostPort(recv.addr.String()); err != nil {
-				return fmt.Errorf("err ip : %v, err %v", recv.addr, err)
+			if ip, _, err = net.SplitHostPort(recv.src.String()); err != nil {
+				return fmt.Errorf("err ip : %v, err %v", recv.src, err)
 			}
 		} else {
-			ip = recv.addr.String()
+			ip = recv.src.String()
 		}
 
 		rtt := receivedAt.Sub(timestamp)
+		log.Printf("[debug] %s: recv pkt from %s, took %s", recv.proto, ip, rtt)
 
 		if pinger, ok := bp.pingers[ip]; ok {
 			pinger.PacketsRecv++
 			pinger.rtts = append(pinger.rtts, rtt)
 		}
 
+		bp.Lock()
 		bp.PacketsRecv++
-		log.Printf("[debug] %s: recv pkt from %s", recv.proto, ip)
+		bp.Unlock()
 
 	default:
 		// Very bad, not sure how this can happen

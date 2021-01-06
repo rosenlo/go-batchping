@@ -107,7 +107,7 @@ type packet struct {
 	nbytes int
 	ttl    int
 	proto  string
-	addr   net.Addr
+	src    net.Addr
 }
 
 // Packet represents a received and processed ICMP echo packet.
@@ -323,7 +323,7 @@ func (p *Pinger) SendICMP(sequence int) error {
 
 	for {
 		if p.ipv4 {
-			log.Printf("[debug] ipv4: send %s", p.addr)
+			log.Printf("[debug] ipv4: send pkt to %s", p.addr)
 			if _, err := p.conn4.WriteTo(msgBytes, dst); err != nil {
 				if neterr, ok := err.(*net.OpError); ok {
 					if neterr.Err == syscall.ENOBUFS {
@@ -332,7 +332,7 @@ func (p *Pinger) SendICMP(sequence int) error {
 				}
 			}
 		} else {
-			log.Printf("[debug] ipv6: send %s", p.addr)
+			log.Printf("[debug] ipv6: send pkt to %s", p.addr)
 			if _, err := p.conn6.WriteTo(msgBytes, dst); err != nil {
 				if neterr, ok := err.(*net.OpError); ok {
 					if neterr.Err == syscall.ENOBUFS {

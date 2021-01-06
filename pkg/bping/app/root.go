@@ -28,7 +28,7 @@ func init() {
 func initConfig() {
 	// basic
 	viper.SetEnvPrefix("bping")
-	viper.SetDefault("command", "ss -atn4 state established '( sport = :8080 )' |awk '{print $4}'|awk -F':' '{print $1}'|sort -n|uniq")
+	viper.SetDefault("command", "ss -atn4 state established | grep -v Address | awk '{print $4}'| awk -F':' '{print $1}'| sort -u")
 	viper.SetDefault("executor", "/bin/sh")
 	viper.SetDefault("executor_arg", "-ec")
 	viper.SetDefault("timeout", 10)

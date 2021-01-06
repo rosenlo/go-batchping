@@ -20,7 +20,7 @@ const (
 )
 
 func init() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	log.SetFlags(log.Lmicroseconds | log.Ltime | log.Lshortfile)
 }
 
 func TransferFalcon(mapStat map[string]*batchping.Statistics) {
@@ -32,16 +32,20 @@ func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 	step := viper.GetInt("interval")
 	for _, stat := range mapStat {
 		log.Printf("[debug] %s", stat)
+		tag := fmt.Sprintf("dst=%s", stat.Addr)
+
 		hostname, err := os.Hostname()
 		if err != nil {
 			hostname = DefaultName
+			tag = fmt.Sprintf("src=%s,%s", hostname, tag)
 		}
+
 		args = append(args, &bping.MetricValue{
 			Endpoint:  hostname,
 			Metric:    metricResp,
-			Value:     fmt.Sprintf("%.2f", float64(stat.AvgRtt)/1e6),
+			Value:     fmt.Sprintf("%.2f", float64(stat.MaxRtt)/1e6),
 			Type:      MetricType,
-			Tags:      fmt.Sprintf("src=%s,dest=%s", hostname, stat.Addr),
+			Tags:      tag,
 			Timestamp: timestamp,
 			Step:      step,
 		})
@@ -50,7 +54,7 @@ func TransferFalcon(mapStat map[string]*batchping.Statistics) {
 			Metric:    metricLoss,
 			Value:     fmt.Sprintf("%.2f", stat.PacketLoss),
 			Type:      MetricType,
-			Tags:      fmt.Sprintf("src=%s,dest=%s", hostname, stat.Addr),
+			Tags:      tag,
 			Timestamp: timestamp,
 			Step:      step,
 		})
@@ -99,17 +103,16 @@ func Run(cmd *cobra.Command, args []string) {
 		if err != nil {
 			quit(err)
 		}
-		if len(addrs) == 0 {
-			log.Printf("[warn] missing address")
-			continue
+
+		if len(addrs) != 0 {
+			go func() {
+				err := bp.Run(addrs)
+				if err != nil {
+					log.Printf("[error] %v", err)
+				}
+			}()
 		}
 
-		go func() {
-			err := bp.Run(addrs)
-			if err != nil {
-				log.Printf("[error] %v", err)
-			}
-		}()
 		select {
 		case <-interval.C:
 			continue
