@@ -180,7 +180,7 @@ func (bp *BatchPing) Run(addrs []string) error {
 			log.Printf("[debug] timeout close")
 			close(bp.done)
 			wg.Wait()
-			return nil
+			return errors.New("timeout reached")
 		}
 	}
 }
