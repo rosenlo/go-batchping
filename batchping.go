@@ -143,7 +143,6 @@ func (bp *BatchPing) Run(addrs []string) error {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
 	bp.batchRecvIpv4ICMP(&wg)
 	bp.batchRecvIpv6ICMP(&wg)
 
@@ -194,6 +193,7 @@ func (bp *BatchPing) batchSendICMP(seq int) {
 }
 
 func (bp *BatchPing) batchRecvICMP(wg *sync.WaitGroup, proto string) {
+	wg.Add(1)
 	defer wg.Done()
 	for {
 		select {
